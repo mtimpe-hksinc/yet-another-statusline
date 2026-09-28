@@ -846,11 +846,11 @@ class GitInfo:
         if loose.is_file():
             try:
                 return loose.read_text().strip()
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 return ''
         try:
             lines = (common / 'packed-refs').read_text().splitlines()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return ''
         for line in lines:
             if not line or line[0] in '#^':
@@ -867,10 +867,12 @@ class GitInfo:
         head_path = Path(gitdir) / 'HEAD'
         if not head_path.is_file():
             return '', ''
+        if (GitInfo._common_dir(gitdir) / 'reftable').is_dir():
+            return GitInfo._read_head_git(gitdir)
         try:
             head = head_path.read_text().strip()
-        except OSError:
-            return '', ''
+        except (OSError, UnicodeDecodeError):
+            return GitInfo._read_head_git(gitdir)
         branch, ref = '', ''
         if head.startswith('ref:'):
             ref = head[4:].strip()            # 'refs/heads/feature/foo'
@@ -880,6 +882,24 @@ class GitInfo:
             branch = f'd:{head[:7]}'
         # no ORIG_HEAD fallback: that is the pre-reset commit, i.e. the wrong sha
         commit = GitInfo._resolve_ref(gitdir, ref)[:9] if ref else ''
+        return branch, commit
+
+    @staticmethod
+    def _read_head_git(gitdir: str) -> tuple[str, str]:
+        """Fallback for reftable repos: HEAD is a 'refs/heads/.invalid' stub."""
+        def rev_parse(*args: str) -> str:
+            try:
+                r = subprocess.run(
+                    ['git', f'--git-dir={gitdir}', 'rev-parse', *args],
+                    capture_output=True, text=True, timeout=2,
+                )
+            except Exception:
+                return ''
+            return r.stdout.strip() if r.returncode == 0 else ''
+        commit = rev_parse('--short=9', 'HEAD')
+        branch = rev_parse('--abbrev-ref', 'HEAD')
+        if branch == 'HEAD':                  # detached: the sha is the branch
+            return (f'd:{commit[:7]}', '') if commit else ('', '')
         return branch, commit
 
     @staticmethod

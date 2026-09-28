@@ -193,3 +193,44 @@ def test_from_cwd_detached_head(tmp_path: Path) -> None:
     result = sl.GitInfo.from_cwd(str(repo))
     assert result.detached
     assert result.branch == _git(repo, 'rev-parse', 'HEAD')[:7]
+
+
+def _reftable_repo(base: Path, branch: str = 'main') -> Path:
+    """Like _scratch_repo but with reftable ref storage (HEAD is a stub)."""
+    base.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run(['git', 'init', '-q', '--ref-format=reftable', '-b', branch, str(base)],
+                       capture_output=True)
+    if r.returncode != 0:
+        pytest.skip('git lacks reftable support')
+    _git(base, 'commit', '-q', '--allow-empty', '-m', 'init')
+    return base
+
+
+@requires_git
+def test_read_head_reftable(tmp_path: Path) -> None:
+    """Reftable repos report the real branch, not the 'refs/heads/.invalid' stub."""
+    repo = _reftable_repo(tmp_path / 'r', branch='feature/foo')
+    branch, commit = sl.GitInfo._read_head(str(repo / '.git'))
+    assert branch == 'feature/foo'
+    assert commit == _git(repo, 'rev-parse', 'HEAD')[:9]
+
+
+@requires_git
+def test_read_head_reftable_detached(tmp_path: Path) -> None:
+    """A detached reftable HEAD matches the loose-ref shape: ('d:<sha[:7]>', '')."""
+    repo = _reftable_repo(tmp_path / 'r')
+    _git(repo, 'checkout', '-q', '--detach')
+    branch, commit = sl.GitInfo._read_head(str(repo / '.git'))
+    assert branch == 'd:' + _git(repo, 'rev-parse', 'HEAD')[:7]
+    assert commit == ''
+
+
+@requires_git
+def test_from_cwd_reftable_linked_worktree(tmp_path: Path) -> None:
+    """A linked worktree of a reftable repo resolves via its own gitdir."""
+    repo = _reftable_repo(tmp_path / 'r')
+    wt = tmp_path / 'wt'
+    _git(repo, 'worktree', 'add', '-q', str(wt), '-b', 'wtbranch')
+    result = sl.GitInfo.from_cwd(str(wt))
+    assert result.branch == 'wtbranch'
+    assert result.commit == _git(wt, 'rev-parse', 'HEAD')[:9]
